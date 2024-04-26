@@ -1,0 +1,479 @@
+---
+title: "cal_schools analysis"
+output:
+  pdf_document: default
+  word_document: default
+  html_document:
+    df_print: paged
+date: "2024-04-10"
+---
+
+# Overview
+
+According to National Center of Education Statistics, "Higher levels of educational attainment are positively correlated with many outcomes, such as employment, earnings, and health." (National Center for Education Statistics). The purpose of this analysis is to examine data publicly available through California Department of Education's website (cde.ca.gov) to analyze where educational attainment gaps may exist, among different demographic groups. 
+
+
+
+```{r}
+# import libraries
+
+library(DBI)
+library(RODBC)
+library(odbc)
+library(RPostgres)
+suppressPackageStartupMessages(library(tidyverse))
+
+# set theme
+theme_set(theme_minimal())
+```
+
+# Part I
+## Establish Connection with Database
+
+In order to carry out the analysis, a connection will be established with Postgres cal_schools database. DBI,
+RPostgres, RODBC, odbc packages will be used for this process. 
+
+```{r}
+# create connection object / establish connection with Postgres
+
+con <- dbConnect(RPostgres::Postgres(), 
+                 dbname = 'cal_schools', 
+                 port = 5433, 
+                 user = 'postgres', 
+                 password = 'erikchris')
+```
+
+
+```{r}
+# query database/ create table with high level stats (college going rate, 
+## enrollment, etc), along with school description info
+
+school_stats <- dbGetQuery(con, 
+"WITH
+  enr_school (cds_code, enr_total) AS
+  (SELECT cds_code, SUM(enr_total) FROM enrollment
+  GROUP BY cds_code),
+  
+  frmp_schools (cds_code, frmp_el) AS
+  (SELECT cds_code, AVG(frpm_count::numeric/enr::numeric * 100)
+  FROM fr_lunch
+  GROUP BY cds_code),
+  
+  ell_schools(cds_code, ell_count) AS 
+  (SELECT cds_code, SUM(total_ell)
+  FROM ell
+  GROUP BY cds_code),
+  
+  cgr_schools (cds_code,hs_completers, enr_college, cgr) AS
+  (SELECT cds_code, SUM(hs_completers), SUM(enr_college), 
+  AVG(enr_college::numeric/ hs_completers::numeric * 100)
+  FROM college_gr
+  WHERE reporting_cat = 'Total' AND completer_type = 'TA'
+  GROUP BY cds_code),
+  
+  grad_schools (cds_code, grad_count) AS
+  (SELECT cds_code, SUM(grad_count)
+  FROM graduates
+  WHERE reporting_cat = 'Total'
+  GROUP BY cds_code), 
+  
+  abs_schools (cds_code, unexc_abs_pct) AS 
+  (SELECT cds_code, AVG(unexc_absences_pct)
+  FROM absents
+  WHERE reporting_cat = 'Total'
+  GROUP BY cds_code
+  )
+
+SELECT counties.county_code, county_name, schools.cds_code, district_name, 
+school_name, status_type, street, city, zip, phone, email, website, open_date, 
+close_date, charter, soc, soc_type, ed_ops_name, eil_name, gs_offered, virtual, 
+year_round, latitude, longitude, adm_email, last_update, district_code, enr_total, 
+frmp_el, ell_count, (ell_count::numeric/enr_total::numeric * 100) AS ell_pct, 
+unexc_abs_pct, grad_count, cgr
+FROM schools
+LEFT JOIN enr_school enr
+USING(cds_code)
+LEFT JOIN frmp_schools fr
+ON fr.cds_code = enr.cds_code
+LEFT JOIN ell_schools ell
+ON fr.cds_code = ell.cds_code
+LEFT JOIN cgr_schools cgr
+ON ell.cds_code = cgr.cds_code
+LEFT JOIN grad_schools gr
+ON cgr.cds_code = gr.cds_code
+LEFT JOIN abs_schools abs
+ON gr.cds_code = abs.cds_code
+JOIN counties
+ON schools.county_code = counties.county_code;")
+
+```
+
+
+```{r}
+# query database/ create table that has detailed information about college going 
+## rates
+
+college_gr <- dbGetQuery(con, "SELECT ac_year, cds_code, co.county_code, 
+                         county_name, school_name, reporting_cat, completer_type, 
+                         hs_completers, enr_college, enr_instate, enr_oos, 
+                         not_enr_college, uc_enr, csu_enr, ccc_enr, 
+                         enr_instate_private, enr_oos_4yr, enr_oos_2yr
+                         FROM college_gr cgr
+                         LEFT JOIN schools s
+                         USING(cds_code)
+                         LEFT JOIN counties co
+                         ON cgr.county_code = co.county_code
+                         WHERE cds_code NOT IN (SELECT cds_code FROM schools 
+                         WHERE soc_type = 'Continuation High Schools') ;")
+
+```
+
+
+```{r}
+# create new column in college stats ; cgr
+
+college_gr <- college_gr |>
+  mutate(cgr = (enr_college/hs_completers*100))
+```
+
+```{r}
+# disconnect from database; move forward to analysis
+
+dbDisconnect(con)
+```
+
+
+# Part II
+## Exploratory Analysis
+
+In this phase, high level summary statistics will be acquired to get information about tables and their
+respective variables. Additionally, histograms, density plots, and box plots will be created to visualize
+how distributions of college going rates differ among varying demographic groups. Additionally, 
+scatter plots will be created to visualize the relationship between college going rates and other variables/
+characteristics. 
+
+```{r}
+# summary statistics of school_stats
+
+summary(school_stats)
+```
+
+```{r}
+# summary statistics of school_stats
+
+summary(college_gr)
+```
+
+```{r}
+# histogram of college going rate
+
+ggplot(school_stats, aes(cgr))+
+  geom_histogram(fill = 'steelblue')+
+  labs(x = 'College Going Rate', 
+  title = 'Histogram',
+  subtitle = 'College Going Rates in California')
+```
+
+
+```{r}
+# density plots of college going rates grouped by demographic info
+
+college_gr |> 
+  filter(reporting_cat %in% c('African American', 'Filipino', 'Pacific Islander', 'American Indian or Alaska Native', 
+                              'Asian', 'Hispanic or Latino', 'White'))|>
+  ggplot(aes(cgr, color = reporting_cat ))+
+  geom_density()+
+  labs(x = 'College Going Rate', 
+       title = "Density Plot", 
+       subtitle = 'College Going Rates by Race')
+
+
+
+## multi-facet density plot to see each distribution more clearly
+
+college_gr |> 
+  filter(reporting_cat %in% c('African American', 'Filipino', 'Pacific Islander', 'American Indian or Alaska Native', 'Asian', 'Hispanic or Latino', 'White'))|>
+  ggplot(aes(cgr, color = reporting_cat ))+
+  geom_density()+
+  facet_wrap(~reporting_cat)+
+  labs(x = 'College Going Rate', 
+       title = 'Density Plots', 
+       subtitle = 'College Going Rates by Race')
+```
+
+
+```{r}
+# box plots of college going rate grouped by demographic info
+
+college_gr |> 
+  filter(reporting_cat %in% c('African American', 'Filipino', 'Pacific Islander', 'American Indian or Alaska Native', 
+                              'Asian', 'Hispanic or Latino', 'White'))|>
+  ggplot( aes(reporting_cat, cgr))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5))+
+  labs(x = 'Reporting Category', 
+       y = 'College Going Rate', 
+       title = 'Boxplot', 
+       subtitle = 'College Going Rates by Race')
+```
+
+```{r}
+# density plots of college going rates grouped by additional demographic characteristics (ell, socioeconomic, etc)
+
+college_gr |> 
+  filter(reporting_cat %in% c('Students with Disabilities', 'Total', 'Homeless', 
+         'Socioeconomically Disadvantaged', 'Migrant', 'Foster', 'English Learners', 'Total'))|>
+  ggplot(aes(cgr, color = reporting_cat))+
+  geom_density()+
+  labs(x = 'College Going Rate', 
+       title = 'Density Plot',
+       subtitle = 'College Going Rate by Demographic Group')
+
+
+## multi-facet density plots to see each distribution more clearly
+
+college_gr |> 
+  filter(reporting_cat %in% c('Students with Disabilities', 'Total', 'Homeless', 
+         'Socioeconomically Disadvantaged', 'Migrant', 'Foster', 'English Learners', 'Total')) |>
+  ggplot(aes(cgr, color = reporting_cat ))+
+  geom_density()+
+  facet_wrap(~reporting_cat)+
+  labs(x= 'College Going Rates', 
+        title = 'Density Plot',
+        subtitle = 'College Going Rate by Demographic Group')
+```
+
+```{r}
+# box plots grouped by additional demographic info
+
+college_gr |> 
+  filter(reporting_cat %in% c('Students with Disabilities', 'Total', 'Homeless', 
+         'Socioeconomically Disadvantaged', 'Migrant', 'Foster', 'English Learners', 'Total'))|>
+  ggplot(aes(reporting_cat, cgr))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5))+
+  labs(x = 'Demographic Group', 
+       y = 'College Going Rate', 
+       title = 'Boxplot', 
+       subtitle = 'College Going Rate by Demographic Group')
+```
+
+
+```{r}
+# create df to check correlations
+
+cgr_cor <- school_stats |>
+  select(frmp_el, unexc_abs_pct, ell_pct, cgr)
+
+## correlations for frmp_el, unexc_abs_pct, ell_pct, and cgr
+
+cor(cgr_cor, use='complete.obs')
+```
+
+
+```{r}
+# scatter plots 
+
+## college going rate and reduced lunch percent eligible
+ggplot(school_stats, aes(frmp_el, cgr))+
+  geom_point(color = 'steelblue')+
+  labs(x = 'Percentage Eligible for Free or Reduced Meal Plan', 
+       y = 'College Going Rate', 
+       title = 'Scatterplot', 
+       subtitle = 'Percentage Eligible for Free or Reduced Meal Plan')
+
+
+
+## college going rate and unexcused absence percent
+ggplot(school_stats,  aes(unexc_abs_pct, cgr))+
+  geom_point(color = 'steelblue')+
+  labs(x = 'Percentage of Unexcused Absences', 
+       y = 'College Going Rate', 
+       title = 'Scatterplot', 
+       subtitle = 'Percentage of Unexcused Absences vs College Going Rate per School')
+
+
+## college going rate and percent english language learners
+ggplot(school_stats, aes(ell_pct, cgr))+
+  geom_point(color = 'steelblue')+
+  labs(x = 'Percentage of English Language Learners', 
+       y = 'College Going Rate', 
+       title = 'Scatterplot', 
+       subtitle = 'Percentage of English Language Learners vs College Going Rate per School')
+```
+
+
+# Part III
+## Analysis and Visualizations
+
+In the exploratory analysis, it was found that college going rates differ among different demographic groups. Additionally, 
+a number of different factors are correlated with college going rates. This part of the analysis will utilize tidyverse functions 
+to identify groups that have lower than average college going rates. ggplot2 will also be utilized to visualize instances where educational attainment gaps exist. 
+
+```{r}
+# lowest to highest college going rate by county
+
+school_stats |>
+  group_by(county_name) |>
+  summarise(cgr = round(mean(cgr, na.rm = TRUE), 2)) |>
+  arrange(cgr)
+```
+
+```{r}
+# lowest to highest college going rate by county/district
+
+school_stats |>
+  group_by(county_name, district_name) |>
+  summarise(cgr = round(mean(cgr, na.rm = TRUE), 2), .groups = 'drop') |>
+  arrange(cgr) |>
+  head(10)
+```
+
+
+```{r}
+# prepare data for visualization
+
+## get location data for California and its counties
+cal_counties <- map_data('county')
+cal_counties <- cal_counties|>
+  filter(region == 'california')
+
+## get college going rates by county
+cgr_counties <- school_stats |>
+  group_by(county_name) |>
+  summarise(cgr = round(mean(cgr, na.rm= TRUE), 2)) |>
+  arrange(desc(cgr))
+
+## change county_name to lowercase for merging purposes
+cgr_counties$county_name <- tolower(cgr_counties$county_name)
+
+
+# merge county location data with college going rate for plotting 
+cgr_counties <- left_join(cal_counties, cgr_counties, by = c('subregion' = 'county_name'))
+```
+
+
+```{r}
+# get 5 counties with the lowest college going rates
+## will be used as labels for visualization
+
+cgr_2 <- cgr_counties |>
+  group_by(subregion) |>
+  summarise(long = min(long), 
+            lat = min(lat), 
+            cgr = mean(cgr))|>
+  arrange(cgr)|>
+  head(5)
+```
+
+
+```{r}
+# visualize map of California with color density to reflect college going rate by county
+
+ggplot(cal_counties, mapping = aes(x=long, y=lat, group=group)) +
+  coord_quickmap()+
+  geom_polygon(color = 'black', fill='white')+
+  geom_polygon(data = cgr_counties, aes(fill = cgr), color = 'white')+
+  theme_void()+
+  # label 5 counties with lowest college going rates
+  geom_label(aes(x = -124.2344, y=41.39047, label = 'Del Norte'), size = 3)+
+  geom_label(aes(x = -118.7799, y=35.78695, label = 'Inyo'), size = 3)+
+  geom_label(aes(x = -121.3410, y=39.70024, label = 'Lassen'), size = 3)+
+  geom_label(aes(x = -120.3842, y=37.18496, label = 'Mariposa'), size = 3)+
+  geom_label(aes(x = -123.9995, y=38.75486, label = 'Mendocino'), size = 3)+
+  labs(title = 'College Going Rate by County', 
+       subtitle = 'Labeled 5 Counties with Lowest College Going Rates')
+```
+
+
+
+```{r}
+# get college going rates grouped by demographic info
+
+college_gr |>
+  filter(reporting_cat %in% c('Asian', 'White', 'Filipino', 'Hispanic or Latino', 
+                              'African American', 'American Indian or Alaska Native', 
+                              'Pacific Islander')) |>
+  group_by(ac_year, reporting_cat) |>
+  summarise(cgr = round(mean(cgr, na.rm = TRUE), 2), .groups = 'drop') |>
+  arrange(cgr)
+```
+
+
+```{r}
+# create separate data frame for cgr/demographic group for plotting
+
+cgr_dems <- college_gr |>
+  group_by(ac_year, reporting_cat) |>
+  summarise(cgr = round(mean(cgr), 2), .groups = 'drop') |>
+  filter(reporting_cat %in% c('Asian', 'White', 'Filipino', 'Hispanic or Latino', 
+                              'African American', 'American Indian or Alaska Native', 
+                              'Pacific Islander'))
+         
+# create a separate object for labels
+cgr_ends <- cgr_dems |>
+  filter(ac_year == '2020-21')
+
+
+# plot line graph
+ggplot(cgr_dems, aes(ac_year, cgr, group= reporting_cat, color = reporting_cat))+
+  geom_line()+
+  geom_point()+
+  geom_label(data = cgr_ends, aes(label = cgr), size = 2, position = position_jitter(width = 0.5, height = 0.5), 
+             show.legend = F)+
+  labs(x = 'Academic Year', 
+       y = 'College Going Rate', 
+       title = "College Going Rate by Demographic Group",
+       subtitle = '2017 - 2021')
+```
+
+```{r}
+# college going rate grouped by county & demographic group
+
+college_gr |> 
+  group_by(county_name, reporting_cat) |> 
+  summarise (cgr = mean(cgr), .groups = 'drop') |>
+  arrange(cgr)
+```
+
+
+```{r}
+# filter df for needed demographic groups
+cgr_dems2 <- college_gr |>
+  filter(reporting_cat %in% c('English Learners', 'Foster', 'Homeless', 'Migrant', 'Students with Disabilities')) |>
+  group_by(ac_year, reporting_cat) |>
+  summarise(total = sum(enr_college), .groups = 'drop') 
+
+# create df with aggregate info/ total college enrollment per year
+cgr_years <- college_gr |>
+  filter(reporting_cat == 'Total') |>
+  group_by(ac_year) |>
+  summarise(acc = sum(enr_college))
+
+# join dfs for plotting 
+cgr_pcts <- left_join(cgr_dems2, cgr_years, by = join_by(ac_year))
+
+# get percentage of demographic group enrolling in college
+cgr_pcts <- cgr_pcts |>
+  mutate (pct = total/acc * 100)
+
+```
+
+
+Out of all student enrolled in college,  what percentage were in the following demographic groups?:
+```{r}
+# plot percentage of certain demographics enrolled in college out of all students enrolled in college
+
+ggplot(cgr_pcts, aes(ac_year, pct, fill = reporting_cat))+
+  geom_bar(position = 'stack', stat = 'identity')+
+  scale_y_continuous(name = 'pct', limits = c(0, 15))+
+  scale_fill_brewer()+
+  labs(x = 'Academic Year', 
+       title = 'Percentage of Students Enrolled in College by Demographic Info',
+       subtitle = 'by Academic year')+
+  coord_flip()
+```
+
+
+
+
