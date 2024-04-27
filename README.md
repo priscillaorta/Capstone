@@ -1,7 +1,7 @@
 ## Eastern University DTSC 691 Capstone Project
 
 This repository contains sql, R, and ipynb files used in the completion of DTSC 691 capstone project. For this project, a database was created utilizing California 
-Department of Education's data (cde.ca.gov) to identify factors associated with college going rates and assess college going rates among different
+Department of Education's data (cde.ca.gov) to identify factors associated with college going rates and to assess college going rates among different
 demographic groups. 
 
 The repository is organized in the following way:
