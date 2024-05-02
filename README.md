@@ -5,7 +5,7 @@ Department of Education's data (cde.ca.gov) to identify factors associated with 
 demographic groups. 
 
 The repository is organized in the following way:
-- `All Project Files` contains all data files
+- `All Project Files` contains all files
 - `pre_analysis.ipynb` is a jupyter notebook that contains code that pre processes the data to prepare it for import using pgAdmin
 - `sql_files` contains sql files containing database and table creation statements, code used to clean and manipulate data, and queries used to provide insights
 - `r_files` contains R markdown files that provide a statistical analysis of the data in addition to visualizations created to communicate insights to non-technical audiences
